@@ -1,3 +1,4 @@
+
 import { useEffect, useState } from "react";
 import {
   Box,
@@ -8,51 +9,81 @@ import {
   TextField,
   Typography
 } from "@mui/material";
+import TrainMap from "./TrainMap";
+
+type TrainData = {
+  train_number: string;
+  train_name: string;
+  current_station: string;
+  next_station: string;
+  current_delay_minutes: number;
+  current_speed_kmph: number;
+  scheduled_travel_time_minutes: number;
+  predicted_travel_time_minutes: number;
+  location: {
+    latitude: number;
+    longitude: number;
+  };
+  location_recorded_at: string;
+};
 
 function App() {
   const [trainNumber, setTrainNumber] = useState("14703");
-  const [trainData, setTrainData] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
+  const [trainData, setTrainData] = useState<TrainData | null>(null);
   const [error, setError] = useState("");
-
-  const getPrediction = async () => {
-    try {
-      setLoading(true);
-      setError("");
-
-      const response = await fetch(
-        `http://127.0.0.1:8000/api/v1/predictions/train/${trainNumber}/eta`
-      );
-
-      if (!response.ok) {
-        throw new Error("Unable to fetch train data");
-      }
-
-      const data = await response.json();
-
-      setTrainData(data);
-    } catch (error) {
-      setError("Unable to fetch train prediction.");
-      setTrainData(null);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    getPrediction();
+    let active = true;
+    let requestInProgress = false;
 
-    const interval = setInterval(() => {
-      getPrediction();
-    }, 5000);
+    const fetchPrediction = async () => {
+      if (requestInProgress) return;
+      requestInProgress = true;
 
-    return () => clearInterval(interval);
+      try {
+        setLoading(true);
+
+        const response = await fetch(
+          `http://127.0.0.1:8000/api/v1/predictions/train/${encodeURIComponent(trainNumber)}/eta`
+        );
+
+        if (!response.ok) {
+          throw new Error(`API request failed: ${response.status}`);
+        }
+
+        const data: TrainData = await response.json();
+
+        if (active) {
+          setTrainData(data);
+          setError("");
+        }
+      } catch {
+        if (active) {
+          setError("Unable to fetch train data. Check that the backend is running.");
+        }
+      } finally {
+        requestInProgress = false;
+
+        if (active) {
+          setLoading(false);
+        }
+      }
+    };
+
+    fetchPrediction();
+
+    const interval = window.setInterval(fetchPrediction, 5000);
+
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
   }, [trainNumber]);
 
   return (
-    <Container maxWidth="md">
-      <Box sx={{ mt: 6 }}>
-
+    <Container maxWidth="lg">
+      <Box sx={{ mt: 4, mb: 5 }}>
         <Typography variant="h3" gutterBottom>
           RailVision
         </Typography>
@@ -61,91 +92,82 @@ function App() {
           AI-Powered Train ETA Prediction
         </Typography>
 
-        <Box sx={{ mt: 4 }}>
-
+        <Box sx={{ display: "flex", gap: 2, mt: 3, mb: 3 }}>
           <TextField
             label="Train Number"
             value={trainNumber}
-            onChange={(e) => setTrainNumber(e.target.value)}
+            onChange={(event) => setTrainNumber(event.target.value)}
           />
 
           <Button
             variant="contained"
-            sx={{ ml: 2, mt: 1 }}
-            onClick={getPrediction}
+            onClick={() => setTrainNumber(trainNumber.trim())}
           >
             Refresh
           </Button>
-
         </Box>
 
-        {loading && (
-          <Typography sx={{ mt: 3 }}>
-            Loading train data...
-          </Typography>
+        {loading && !trainData && (
+          <Typography>Loading train data...</Typography>
         )}
 
         {error && (
-          <Typography color="error" sx={{ mt: 3 }}>
+          <Typography color="error" sx={{ mb: 2 }}>
             {error}
           </Typography>
         )}
 
         {trainData && (
-          <Card sx={{ mt: 4 }}>
-            <CardContent>
+          <>
+            <Card sx={{ mb: 3 }}>
+              <CardContent>
+                <Typography variant="h5">
+                  Train {trainData.train_number} — {trainData.train_name}
+                </Typography>
 
-              <Typography variant="h5">
-                Train {trainData.train_number}
-              </Typography>
+                <Typography sx={{ mt: 2 }}>
+                  Current station: {trainData.current_station}
+                </Typography>
 
-              <Typography sx={{ mt: 1 }}>
-                {trainData.train_name}
-              </Typography>
+                <Typography>
+                  Next station: {trainData.next_station}
+                </Typography>
 
-              <Typography sx={{ mt: 2 }}>
-                Current Station: {trainData.current_station}
-              </Typography>
+                <Typography>
+                  Delay: {trainData.current_delay_minutes} minutes
+                </Typography>
 
-              <Typography>
-                Next Station: {trainData.next_station}
-              </Typography>
+                <Typography>
+                  Speed: {trainData.current_speed_kmph} km/h
+                </Typography>
 
-              <Typography>
-                Current Delay: {trainData.current_delay_minutes} minutes
-              </Typography>
+                <Typography>
+                  Predicted travel time:{" "}
+                  {trainData.predicted_travel_time_minutes} minutes
+                </Typography>
 
-              <Typography>
-                Current Speed: {trainData.current_speed_kmph} km/h
-              </Typography>
+                <Typography color="text.secondary" sx={{ mt: 1 }}>
+                  Last location update:{" "}
+                  {new Date(trainData.location_recorded_at).toLocaleTimeString()}
+                </Typography>
+              </CardContent>
+            </Card>
 
-              <Typography>
-                Scheduled Travel Time:{" "}
-                {trainData.scheduled_travel_time_minutes} minutes
-              </Typography>
+            <Typography variant="h5" sx={{ mb: 2 }}>
+              Live Train Map
+            </Typography>
 
-              <Typography variant="h6" sx={{ mt: 3 }}>
-                AI Predicted Travel Time:{" "}
-                {trainData.predicted_travel_time_minutes} minutes
-              </Typography>
+            <TrainMap
+              latitude={trainData.location.latitude}
+              longitude={trainData.location.longitude}
+            />
 
-              <Typography sx={{ mt: 2 }}>
-                Location:{" "}
-                {trainData.location.latitude.toFixed(4)},{" "}
-                {trainData.location.longitude.toFixed(4)}
-              </Typography>
-
-              <Typography sx={{ mt: 2 }} color="text.secondary">
-                Last updated:{" "}
-                {new Date(
-                  trainData.location_recorded_at
-                ).toLocaleTimeString()}
-              </Typography>
-
-            </CardContent>
-          </Card>
+            <Typography color="text.secondary" sx={{ mt: 2 }}>
+              Coordinates: {trainData.location.latitude.toFixed(5)},{" "}
+              {trainData.location.longitude.toFixed(5)}
+            </Typography>
+          </>
         )}
-
       </Box>
     </Container>
   );
