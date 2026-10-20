@@ -1,21 +1,15 @@
-import time
-import math
-import psycopg
 
+import time
+import psycopg
+from psycopg.rows import dict_row
 
 DATABASE_URL = "postgresql://postgres:postgres123@localhost:5432/railvision"
 
-TRAIN_ID = 1
-JOURNEY_ID = 1
-
-
-# Jaisalmer
-START_LAT = 26.9152
-START_LON = 70.9269
-
-# Phalodi
-END_LAT = 27.1270
-END_LON = 72.3680
+TRAIN_NUMBER = "14703"
+STATION_CODES = ["JSM", "PLC", "LGH"]
+UPDATE_INTERVAL = 5
+PROGRESS_STEP = 0.1
+SPEED_KMPH = 60
 
 
 def interpolate(start, end, progress):
@@ -23,75 +17,156 @@ def interpolate(start, end, progress):
 
 
 def main():
-
     print("RailVision Train Simulator")
-    print("---------------------------")
-    print("Train: 14703")
-    print("Route: Jaisalmer -> Phalodi")
+    print("=" * 35)
+    print(f"Train: {TRAIN_NUMBER}")
+    print("Route: Jaisalmer -> Phalodi -> Lalgarh")
     print()
 
-    connection = psycopg.connect(DATABASE_URL)
-
-    progress = 0.0
-
-    while progress <= 1.0:
-
-        latitude = interpolate(
-            START_LAT,
-            END_LAT,
-            progress
-        )
-
-        longitude = interpolate(
-            START_LON,
-            END_LON,
-            progress
-        )
-
-        speed = 60
+    with psycopg.connect(
+        DATABASE_URL,
+        row_factory=dict_row
+    ) as connection:
 
         with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT train_id
+                FROM trains
+                WHERE train_number = %s
+                """,
+                (TRAIN_NUMBER,)
+            )
+            train = cursor.fetchone()
+
+            if not train:
+                raise ValueError(f"Train {TRAIN_NUMBER} not found.")
+
+            train_id = train["train_id"]
 
             cursor.execute(
                 """
-                INSERT INTO train_locations
-                (
-                    train_id,
-                    journey_id,
-                    latitude,
-                    longitude,
-                    speed_kmph,
-                    recorded_at
-                )
-                VALUES
-                (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                SELECT journey_id
+                FROM journey_records
+                WHERE train_id = %s
+                  AND status = 'RUNNING'
+                ORDER BY journey_id DESC
+                LIMIT 1
                 """,
-                (
-                    TRAIN_ID,
-                    JOURNEY_ID,
-                    latitude,
-                    longitude,
-                    speed
-                )
+                (train_id,)
             )
+            journey = cursor.fetchone()
 
-            connection.commit()
+            if not journey:
+                raise ValueError(
+                    "No RUNNING journey found for this train. "
+                    "Create or activate a journey first."
+                )
 
-        print(
-            f"Progress: {progress * 100:.0f}% | "
-            f"Lat: {latitude:.4f} | "
-            f"Lon: {longitude:.4f} | "
-            f"Speed: {speed} km/h"
-        )
+            journey_id = journey["journey_id"]
 
-        progress += 0.1
+            cursor.execute(
+                """
+                SELECT station_code, station_name, latitude, longitude
+                FROM stations
+                WHERE station_code = ANY(%s)
+                """,
+                (STATION_CODES,)
+            )
+            rows = cursor.fetchall()
 
-        time.sleep(5)
+            station_data = {
+                row["station_code"]: row
+                for row in rows
+            }
 
-    connection.close()
+            for code in STATION_CODES:
+                station = station_data.get(code)
 
-    print()
-    print("Train reached Phalodi.")
+                if not station:
+                    raise ValueError(
+                        f"Station {code} was not found in the database."
+                    )
+
+                if station["latitude"] is None or station["longitude"] is None:
+                    raise ValueError(
+                        f"Station {code} is missing coordinates. "
+                        "Update its latitude and longitude first."
+                    )
+
+            route = [station_data[code] for code in STATION_CODES]
+
+            print(f"Journey ID: {journey_id}")
+            print()
+
+            for index in range(len(route) - 1):
+                start_station = route[index]
+                end_station = route[index + 1]
+
+                print(
+                    f"Simulating: {start_station['station_name']} "
+                    f"-> {end_station['station_name']}"
+                )
+
+                steps = round(1 / PROGRESS_STEP)
+
+                for step in range(steps + 1):
+                    progress = step / steps
+
+                    latitude = interpolate(
+                        float(start_station["latitude"]),
+                        float(end_station["latitude"]),
+                        progress
+                    )
+
+                    longitude = interpolate(
+                        float(start_station["longitude"]),
+                        float(end_station["longitude"]),
+                        progress
+                    )
+
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            """
+                            INSERT INTO train_locations
+                            (
+                                train_id,
+                                journey_id,
+                                latitude,
+                                longitude,
+                                speed_kmph,
+                                recorded_at
+                            )
+                            VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                            """,
+                            (
+                                train_id,
+                                journey_id,
+                                latitude,
+                                longitude,
+                                SPEED_KMPH
+                                if step not in (0, steps)
+                                else 0
+                            )
+                        )
+
+                    connection.commit()
+
+                    print(
+                        f"{start_station['station_code']} -> "
+                        f"{end_station['station_code']} | "
+                        f"{progress * 100:5.0f}% | "
+                        f"Lat: {latitude:.5f} | "
+                        f"Lon: {longitude:.5f}"
+                    )
+
+                    if not (index == len(route) - 2 and step == steps):
+                        time.sleep(UPDATE_INTERVAL)
+
+                print(f"Reached {end_station['station_name']}")
+                print()
+
+    print("Simulation completed at Lalgarh Junction.")
 
 
 if __name__ == "__main__":
